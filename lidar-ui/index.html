@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RPLidar Simple UI</title>
+  <style>
+    :root {
+      --bg: #f3f6fb;
+      --panel: #ffffff;
+      --text: #10233a;
+      --muted: #5f7287;
+      --grid: #dfe8f2;
+      --accent: #0b7bdc;
+      --ok: #1a9a52;
+      --warn: #bf5f00;
+    }
+
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top, #eef5ff 0%, var(--bg) 50%);
+      color: var(--text);
+    }
+
+    .wrap {
+      max-width: 900px;
+      margin: 20px auto;
+      padding: 0 16px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid #e7edf5;
+      border-radius: 14px;
+      padding: 14px;
+      box-shadow: 0 8px 24px rgba(25, 54, 86, 0.08);
+    }
+
+    h1 {
+      margin: 0 0 6px;
+      font-size: 24px;
+    }
+
+    .sub {
+      margin: 0 0 12px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+
+    input {
+      border: 1px solid #cfd9e6;
+      border-radius: 10px;
+      padding: 10px 12px;
+      min-width: 320px;
+      font-size: 14px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 14px;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    #status {
+      font-size: 14px;
+      color: var(--warn);
+    }
+
+    #status.ok {
+      color: var(--ok);
+    }
+
+    canvas {
+      width: 100%;
+      height: auto;
+      background: #fff;
+      border: 1px solid #e2e9f3;
+      border-radius: 12px;
+    }
+
+    .hint {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>RPLidar Live View</h1>
+      <p class="sub">Simple local UI using ROS bridge WebSocket</p>
+
+      <div class="row">
+        <input id="wsUrl" value="ws://192.168.1.181:9090" />
+        <button id="connectBtn">Connect</button>
+        <span id="status">Disconnected</span>
+      </div>
+
+      <canvas id="scan" width="800" height="800"></canvas>
+      <div class="hint">Topic: <code>/scan</code> (sensor_msgs/msg/LaserScan)</div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/roslib/build/roslib.min.js"></script>
+  <script>
+    const canvas = document.getElementById("scan");
+    const ctx = canvas.getContext("2d");
+    const statusEl = document.getElementById("status");
+    const wsInput = document.getElementById("wsUrl");
+    const connectBtn = document.getElementById("connectBtn");
+
+    const W = canvas.width;
+    const H = canvas.height;
+    const cx = W / 2;
+    const cy = H / 2;
+    const pixelsPerMeter = 55;
+
+    let ros = null;
+    let scanSub = null;
+
+    function drawGrid() {
+      ctx.clearRect(0, 0, W, H);
+      ctx.strokeStyle = "#dfe8f2";
+      ctx.lineWidth = 1;
+
+      for (let r = 1; r <= 7; r++) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, r * pixelsPerMeter, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      ctx.strokeStyle = "#b8c7d9";
+      ctx.beginPath();
+      ctx.moveTo(0, cy);
+      ctx.lineTo(W, cy);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(cx, 0);
+      ctx.lineTo(cx, H);
+      ctx.stroke();
+
+      ctx.fillStyle = "#10233a";
+      ctx.beginPath();
+      ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function setStatus(text, ok = false) {
+      statusEl.textContent = text;
+      statusEl.classList.toggle("ok", ok);
+    }
+
+    function disconnect() {
+      if (scanSub) {
+        scanSub.unsubscribe();
+        scanSub = null;
+      }
+      if (ros) {
+        ros.close();
+        ros = null;
+      }
+      setStatus("Disconnected", false);
+      connectBtn.textContent = "Connect";
+    }
+
+    function connect() {
+      disconnect();
+
+      ros = new ROSLIB.Ros({ url: wsInput.value.trim() });
+
+      ros.on("connection", () => {
+        setStatus("Connected", true);
+        connectBtn.textContent = "Reconnect";
+
+        scanSub = new ROSLIB.Topic({
+          ros,
+          name: "/scan",
+          messageType: "sensor_msgs/msg/LaserScan"
+        });
+
+        scanSub.subscribe((msg) => {
+          drawGrid();
+          ctx.fillStyle = "#0b7bdc";
+
+          let angle = msg.angle_min;
+          for (let i = 0; i < msg.ranges.length; i++, angle += msg.angle_increment) {
+            const d = msg.ranges[i];
+            if (!Number.isFinite(d) || d < msg.range_min || d > msg.range_max) {
+              continue;
+            }
+            const x = cx + Math.cos(angle) * d * pixelsPerMeter;
+            const y = cy - Math.sin(angle) * d * pixelsPerMeter;
+            ctx.fillRect(x, y, 2, 2);
+          }
+        });
+      });
+
+      ros.on("error", (err) => {
+        setStatus("Error: " + (err?.message || err), false);
+      });
+
+      ros.on("close", () => {
+        setStatus("Connection closed", false);
+      });
+    }
+
+    connectBtn.addEventListener("click", connect);
+    drawGrid();
+  </script>
+</body>
+</html>
